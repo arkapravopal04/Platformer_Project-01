@@ -1,4 +1,5 @@
 import pygame
+import sys
 from player_classes import Player
 from camera import Camera
 from test_enemy import Enemy
@@ -19,11 +20,7 @@ pygame.display.set_caption("rustbound")
 clock = pygame.time.Clock()
 
 
-
-
-
 #groups
-
 
 # player
 player_group = pygame.sprite.GroupSingle()
@@ -41,59 +38,47 @@ enemy_group.add(enemy)
 background_image = pygame.image.load('random_images_not_sorted/big_pic_2.jpg').convert_alpha()
 
 #camera
-
 camera = Camera(player_reference=player,map_size=background_image.get_size(),screen_size=size)
-
 
 
 #random sprites
 
 
 #event loop
-while True:
+running = True
+while running:
     for event in pygame.event.get():
-        if event.type == pygame.quit:
-            pygame.quit()
-            exit()
-    screen.fill('#4c76a5')
+        if event.type == pygame.QUIT:
+            running = False
 
+    screen.fill('#4c76a5')
 
     # background stuff
     # screen.blit(background_image,(0,0))
     screen.blit(background_image, camera.apply(background_image.get_rect(topleft=(0, 0))))
 
-
     # unfreesze these later
     enemy_group.draw(screen)
     enemy_group.update()
 
-    # player_group.draw(screen)
     player_group.update()
 
-    # camera_group.draw(screen)
     camera.update()
     screen.blit(player.image, camera.apply(player.rect))
-
-
 
     # debug boxes
     camera.draw_debug_box(screen)
     player.debug(screen)
 
-
     #drawing the health bar
     player.draw_health(screen)
 
+    # if player gets 'hit' (only while alive, to avoid pointless calls after death)
+    if not player.is_dead and pygame.sprite.groupcollide(player_group, enemy_group, False, False):
+        player.get_hit(amount=5)
 
-
-# if player gets 'hit'
-    if pygame.sprite.groupcollide(player_group, enemy_group, False, False):
-        # if there's a collision, tell the player to get hit
-        player.get_hit(amount = 5)
-        # pygame.draw.rect(screen, (37, 232, 92), (0, 0, health.current_health, 20))
     pygame.display.flip()
     clock.tick(60)
 
-
-
-
+pygame.quit()
+sys.exit()
