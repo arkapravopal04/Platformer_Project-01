@@ -25,8 +25,6 @@ class Camera(pygame.sprite.Sprite):
         min_offset = -(map_length - screen_length)
         max_offset = 0
         if min_offset > max_offset:
-            # Map is smaller than the screen on this axis - center it instead
-            # of clamping into a contradictory range.
             return (screen_length - map_length) / 2
         return max(min_offset, min(max_offset, value))
 
@@ -34,18 +32,6 @@ class Camera(pygame.sprite.Sprite):
         # Follow the player horizontally...
         target_x = -self.player.rect.centerx + self.screen_width // 2
 
-        # ...and now vertically too. This is deliberately based on
-        # rect.bottom rather than rect.centery: bottom is pinned to
-        # ground_y by apply_gravity() whenever the player is grounded, so
-        # it gives a rock-steady rest position (no per-frame jitter from
-        # animation frames of slightly different heights), and it reads
-        # naturally as "how far off the ground am I right now."
-        #
-        # At rest (bottom == ground_y), this works out to the same fixed
-        # anchor as before (ground line sits at the bottom of the screen).
-        # As the player rises (jump) or drops (fall/pit), this target
-        # moves too - combined with the same trailing lerp used for X,
-        # that's what produces the vertical trail effect.
         target_y = -self.player.rect.bottom + self.screen_height
         return target_x, target_y
 
@@ -71,13 +57,6 @@ class Camera(pygame.sprite.Sprite):
             self.offset.x = target_x
             self.offset.y = target_y
 
-        # Clamp both axes to the map boundaries (safe even if map < screen
-        # on either axis). Note: with ground_y currently sitting exactly at
-        # the top of what the resting camera already shows, there's no
-        # headroom above for an upward jump trail to reveal - the clamp
-        # will hold offset.y at 0 during jumps until the map/ground_y gives
-        # it room above. Falling below ground_y (a pit, once one exists)
-        # has headroom already, since the map is taller than the screen.
         self.offset.x = self._clamp_axis(self.offset.x, self.map_rect.width, self.screen_width)
         self.offset.y = self._clamp_axis(self.offset.y, self.map_rect.height, self.screen_height)
 

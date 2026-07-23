@@ -81,12 +81,14 @@ class Player(pygame.sprite.Sprite):
 
         # dash
         self.is_dashing = False
-        self.dash_direction = 0        # -1 left, +1 right - locked in when the dash starts
+        self.dash_direction = 0 
+        # -1 left, +1 right - locked in when the dash starts
         self.dash_speed = 16
         self.dash_duration_frames = 8
         self.dash_frames_left = 0
         self.dash_cooldown_ms = 800
-        self.last_dash_time = -9999    # far enough in the past that a dash is available immediately
+        self.last_dash_time = -9999 
+        # far enough in the past that a dash is available immediately
 
 
         # health
