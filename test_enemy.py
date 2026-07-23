@@ -24,7 +24,7 @@ class Enemy(pygame.sprite.Sprite):
 
 
     def update(self):
-        # self.movement() #tempory
+        # self.movement() #tempory - re-enable once real enemy AI replaces this stub
         pass
 
 
