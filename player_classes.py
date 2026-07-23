@@ -11,6 +11,10 @@ class Player(pygame.sprite.Sprite):
     def __init__(self):
         super().__init__()
 
+        # world bounds for wall collision - set from outside via set_world_bounds()
+        # once the map size is known; defaults to "no bound" until then.
+        self.world_width = None
+
 
         self.player_stand = pygame.image.load('player_animations/player_idle/1_player_idle.png').convert_alpha()
 
@@ -75,6 +79,15 @@ class Player(pygame.sprite.Sprite):
         self.invincibility_duration = 1000
         self.invincibility_timer= 0#check this
 
+        # dash
+        self.is_dashing = False
+        self.dash_direction = 0        # -1 left, +1 right - locked in when the dash starts
+        self.dash_speed = 16
+        self.dash_duration_frames = 8
+        self.dash_frames_left = 0
+        self.dash_cooldown_ms = 800
+        self.last_dash_time = -9999    # far enough in the past that a dash is available immediately
+
 
         # health
         self.default_health = 100
@@ -83,32 +96,49 @@ class Player(pygame.sprite.Sprite):
 
 
         #important
+        self.spawn_pos = (320, 360)
         self.image = self.player_blinking[self.player_index]
-        self.rect = self.image.get_rect(midbottom = (320,360))
+        self.rect = self.image.get_rect(midbottom = self.spawn_pos)
         #location is also temporary
 
 
 
+    def set_world_bounds(self, world_width):
+        self.world_width = world_width
+
     def player_input(self):
+        if self.is_dead:
+            return
 
         #walking
         keys = pygame.key.get_pressed()
-        if keys[pygame.K_d]:
-            self.rect.x += 3
-            self.direction = 'right'
-        if keys[pygame.K_a]:
-            self.rect.x -= 3
-            self.direction = 'left'
+        self.is_walk = True  # default each frame; sprint branch below overrides it
 
-            #sprinting
-        if keys[pygame.K_LSHIFT] and keys[pygame.K_d]:
-            self.rect.x += 4
-            self.direction = 'right'
-            self.is_walk = False
-        if keys[pygame.K_LSHIFT] and keys[pygame.K_a]:
-            self.rect.x -= 4
-            self.direction = 'left'
-            self.is_walk = False
+        sprinting = keys[pygame.K_LSHIFT]
+        speed = 6 if sprinting else 3
+
+        if not self.is_dashing:
+            if keys[pygame.K_d]:
+                self.rect.x += speed
+                self.direction = 'right'
+                if sprinting:
+                    self.is_walk = False
+            if keys[pygame.K_a]:
+                self.rect.x -= speed
+                self.direction = 'left'
+                if sprinting:
+                    self.is_walk = False
+
+            # Wall collision: keep the player inside the map instead of letting
+            # them walk off the left/right edges (this was the actual cause of
+            # the "game hangs at the wall" symptom - the camera correctly stops
+            # scrolling at the map edge, but the player kept walking past it,
+            # off-screen, looking like a freeze).
+            if self.world_width is not None:
+                if self.rect.left < 0:
+                    self.rect.left = 0
+                if self.rect.right > self.world_width:
+                    self.rect.right = self.world_width
 
 
             #jumping
@@ -120,6 +150,8 @@ class Player(pygame.sprite.Sprite):
             self.vertical_momentum = self.min_jump_height_speed
 
     def apply_gravity(self):
+        if self.is_dead:
+            return
         self.vertical_momentum += self.gravity_strength
         self.rect.y += self.vertical_momentum
 
@@ -152,17 +184,28 @@ class Player(pygame.sprite.Sprite):
         else:
             animation_list = self.player_sprinting
             animation_speed = 0.2
-            self.is_walk = True
 
         if self.is_jump:
             animation_list = self.player_jumping
             animation_speed = 0.1
 
+        if self.is_dead:
+            # freeze on the current frame instead of looping forever
+            animation_list = [self.image]
+            animation_speed = 0
+
         self.player_index += animation_speed
 
         if self.player_index >= len(animation_list):
             self.player_index = 0
+
+        # Re-anchor on midbottom every frame: different animation frames can
+        # have different surface sizes/padding, so keep the rect's bottom
+        # pinned to where the player actually stands instead of letting it
+        # drift from whatever size the rect happened to be last frame.
+        anchor = self.rect.midbottom
         self.image = animation_list[int(self.player_index)]
+        self.rect = self.image.get_rect(midbottom=anchor)
 
 
         if self.direction == 'left':
@@ -205,10 +248,80 @@ class Player(pygame.sprite.Sprite):
                 print(f"Player took 10 damage. Current health: {self.current_health}/{self.default_health}")
                 return
 
+    def start_dash(self):
+        """Trigger a momentary dash in the direction the player is currently
+        facing. No-ops if already dashing, dead, or still on cooldown."""
+        if self.is_dead or self.is_dashing:
+            return
+        now = pygame.time.get_ticks()
+        if now - self.last_dash_time < self.dash_cooldown_ms:
+            return  # still on cooldown
+        self.is_dashing = True
+        self.dash_frames_left = self.dash_duration_frames
+        self.dash_direction = 1 if self.direction == 'right' else -1
+        self.last_dash_time = now
+
+    def apply_dash(self):
+        if not self.is_dashing:
+            return
+        if self.is_dead:
+            self.is_dashing = False
+            return
+
+        self.rect.x += self.dash_speed * self.dash_direction
+
+        # same wall clamp as normal movement - dashing into a wall just
+        # stops you at the wall rather than punching through it
+        if self.world_width is not None:
+            if self.rect.left < 0:
+                self.rect.left = 0
+            if self.rect.right > self.world_width:
+                self.rect.right = self.world_width
+
+        self.dash_frames_left -= 1
+        if self.dash_frames_left <= 0:
+            self.is_dashing = False
+
+    def draw_dash_indicator(self, display_surf):
+        bar_width = 60
+        now = pygame.time.get_ticks()
+        fraction = min(1.0, (now - self.last_dash_time) / self.dash_cooldown_ms)
+        fill_width = int(bar_width * fraction)
+        ready_color = (60, 200, 220)
+        charging_color = (90, 90, 100)
+        color = ready_color if fraction >= 1.0 else charging_color
+
+        pygame.draw.rect(display_surf, (0, 0, 0), (9, 19, bar_width + 2, 7), 2)
+        pygame.draw.rect(display_surf, color, (10, 20, fill_width, 5))
+
     def draw_health(self,display_surf):
         pygame.draw.rect(display_surf, (0,0,0), (9, 9, 102, 7),2)
         pygame.draw.rect(display_surf,(32, 156, 5),(10,10,self.current_health,5))
         pygame.draw.rect(display_surf, (0,255,0), (10, 10, self.current_health, 2))
+
+    def restart(self):
+        """Reset the player back to a fresh, alive state at the spawn point.
+        Called after is_dead, e.g. when the player presses the restart key."""
+        self.current_health = self.default_health
+        self.is_dead = False
+        self.is_invincible = False
+        self.invincibility_timer = 0
+
+        self.vertical_momentum = 0
+        self.is_on_ground = True
+        self.is_jump = False
+        self.is_walk = True
+        self.direction = 'right'
+        self.status = 'idle'
+        self.player_index = 0
+
+        self.is_dashing = False
+        self.dash_frames_left = 0
+        self.last_dash_time = -9999  # dash immediately available after respawn
+
+        self.image = self.player_blinking[0]
+        self.image.set_alpha(255)
+        self.rect = self.image.get_rect(midbottom=self.spawn_pos)
 
 
     def player_locate(self):
@@ -218,19 +331,19 @@ class Player(pygame.sprite.Sprite):
           if self.rect.left < -30:
               self.rect.left = 660
 
-    def debug(self, screen):
-
-        pygame.draw.rect(screen, 'Green', self.rect, 2)
+    def debug(self, screen, camera=None):
+        rect_to_draw = camera.apply(self.rect) if camera else self.rect
+        pygame.draw.rect(screen, 'Green', rect_to_draw, 2)
 
 
     def update(self):
         self.player_status()
-        self.animation_state()
         self.player_input()
+        self.apply_dash()
         self.apply_gravity()
+        # animation runs last so it re-anchors to this frame's *final* rect
+        # position (post-gravity/post-movement), not last frame's stale one
+        self.animation_state()
         self.invincibility_frames()#update this
         #temporary to not lose the player
         # self.player_locate()
-
-
-
