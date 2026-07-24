@@ -81,14 +81,12 @@ class Player(pygame.sprite.Sprite):
 
         # dash
         self.is_dashing = False
-        self.dash_direction = 0 
-        # -1 left, +1 right - locked in when the dash starts
+        self.dash_direction = 0 # -1 left, +1 right locked in when the dash starts
         self.dash_speed = 16
         self.dash_duration_frames = 8
         self.dash_frames_left = 0
         self.dash_cooldown_ms = 800
-        self.last_dash_time = -9999 
-        # far enough in the past that a dash is available immediately
+        self.last_dash_time = -9999  # far enough in the past that a dash is available immediately
 
 
         # health
@@ -148,11 +146,15 @@ class Player(pygame.sprite.Sprite):
             self.vertical_momentum = self.jump_initial_velocity
             self.is_on_ground = False
             self.is_jump = True
+            self.is_dashing = False
+            self.dash_frames_left = 0
         if not keys[pygame.K_SPACE] and self.vertical_momentum < self.min_jump_height_speed and not self.is_on_ground:
             self.vertical_momentum = self.min_jump_height_speed
 
     def apply_gravity(self):
         if self.is_dead:
+            return
+        if self.is_dashing:
             return
         self.vertical_momentum += self.gravity_strength
         self.rect.y += self.vertical_momentum
@@ -160,10 +162,17 @@ class Player(pygame.sprite.Sprite):
         # Check for ground collision
         if self.rect.bottom >= self.ground_y:
             self.rect.bottom = self.ground_y
-            if not self.is_on_ground:
-                self.is_on_ground = True
-                self.is_jump = False
-                self.vertical_momentum = 0
+            # Reset unconditionally while grounded, not just on the
+            # airborne->grounded transition - previously this only fired
+            # once on landing, so vertical_momentum quietly kept
+            # accumulating every frame the player stood still afterward
+            # (harmless on its own since the ground clamp above always
+            # corrected the position anyway, but it meant gravity would
+            # "resume" a dash from a large stale value instead of a clean
+            # one if the player dashed after standing still for a while).
+            self.is_on_ground = True
+            self.is_jump = False
+            self.vertical_momentum = 0
 
 
     def player_status(self):
@@ -341,8 +350,13 @@ class Player(pygame.sprite.Sprite):
     def update(self):
         self.player_status()
         self.player_input()
-        self.apply_dash()
+        # gravity must be checked/applied BEFORE apply_dash() decrements the
+        # dash timer - otherwise, on the dash's last frame, apply_dash()
+        # would already flip is_dashing to False before apply_gravity() runs,
+        # letting one frame of gravity sneak in right at the tail end of an
+        # otherwise gravity-free dash.
         self.apply_gravity()
+        self.apply_dash()
         # animation runs last so it re-anchors to this frame's *final* rect
         # position (post-gravity/post-movement), not last frame's stale one
         self.animation_state()
