@@ -12,6 +12,9 @@ class Camera(pygame.sprite.Sprite):
 
         self.trail_speed = 0.2 # between 0 and 1. 1 means no trail (snaps to player)
 
+        self.vertical_anchor_margin = 90
+
+        
     def apply(self, target_rect):
         # player sprite adjustment
         return target_rect.move(self.offset.x, self.offset.y)
@@ -32,7 +35,22 @@ class Camera(pygame.sprite.Sprite):
         # Follow the player horizontally...
         target_x = -self.player.rect.centerx + self.screen_width // 2
 
-        target_y = -self.player.rect.bottom + self.screen_height
+        # ...and now vertically too. This is deliberately based on
+        # rect.bottom rather than rect.centery: bottom is pinned to
+        # ground_y by apply_gravity() whenever the player is grounded, so
+        # it gives a rock-steady rest position (no per-frame jitter from
+        # animation frames of slightly different heights), and it reads
+        # naturally as "how far off the ground am I right now."
+        #
+        # At rest (bottom == ground_y), this anchors the ground line
+        # vertical_anchor_margin pixels above the bottom of the screen
+        # (instead of glued to the very bottom edge), so there's headroom
+        # above for the jump trail and a little visible ground below the
+        # player's feet - standard side-scroller framing. As the player
+        # rises (jump) or drops (fall/pit), this target moves too -
+        # combined with the same trailing lerp used for X, that's what
+        # produces the vertical trail effect.
+        target_y = -self.player.rect.bottom + (self.screen_height - self.vertical_anchor_margin)
         return target_x, target_y
 
     def snap_to_player(self):
