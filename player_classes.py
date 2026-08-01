@@ -14,6 +14,20 @@ class Player(pygame.sprite.Sprite):
         # world bounds for wall collision - set from outside via set_world_bounds()
         # once the map size is known; defaults to "no bound" until then.
         self.world_width = None
+        # obstacle-course platforms - set from outside via set_platforms();
+        # None means "no platforms exist yet, just the flat ground_y floor"
+        self.platforms = None
+        # whichever platform the player is currently standing on, if any
+        # (None when on the ground floor or airborne). Used to carry the
+        # player along with a MovingPlatform each frame - see
+        # apply_gravity() and player_input()'s movement-order handling.
+        self.standing_platform = None
+        # blocking walls - vertical obstacles that stop horizontal
+        # movement (walking, sprinting, dashing) but don't affect
+        # vertical movement at all; used to physically prevent a big
+        # sprint/dash jump from skipping past an intermediate platform.
+        # Set from outside via set_walls(); None/empty means no walls.
+        self.walls = []
 
 
         self.player_stand = pygame.image.load('player_animations/player_idle/1_player_idle.png').convert_alpha()
@@ -81,12 +95,12 @@ class Player(pygame.sprite.Sprite):
 
         # dash
         self.is_dashing = False
-        self.dash_direction = 0 # -1 left, +1 right locked in when the dash starts
+        self.dash_direction = 0        # -1 left, +1 right - locked in when the dash starts
         self.dash_speed = 16
         self.dash_duration_frames = 8
         self.dash_frames_left = 0
         self.dash_cooldown_ms = 800
-        self.last_dash_time = -9999  # far enough in the past that a dash is available immediately
+        self.last_dash_time = -9999    # far enough in the past that a dash is available immediately
 
 
         # health
@@ -106,6 +120,75 @@ class Player(pygame.sprite.Sprite):
     def set_world_bounds(self, world_width):
         self.world_width = world_width
 
+    def set_platforms(self, platforms):
+        self.platforms = platforms
+
+    def set_ground_level(self, ground_y):
+        """Reposition the ground line - and the player's spawn point along
+        with it - to match the real background image's height. ground_y
+        starts as a hardcoded placeholder (360) since the actual image size
+        isn't known until main.py loads it; call this once, right after
+        loading the background, before the game loop starts. Without this,
+        the ground stays wherever the placeholder put it regardless of how
+        tall the real image actually is - on a much taller background,
+        that leaves the player (and anything positioned relative to
+        ground_y, like obstacle-course platforms) sitting near the very
+        top of the image instead of near the bottom.
+        """
+        self.ground_y = ground_y
+        self.spawn_pos = (self.spawn_pos[0], ground_y)
+        self.rect = self.image.get_rect(midbottom=self.spawn_pos)
+
+    def apply_platform_ride(self):
+        """Shift the player horizontally by however much their current
+        standing_platform moved this frame, so standing on a
+        MovingPlatform actually carries the player along with it instead
+        of leaving them hovering in place while the platform slides out
+        from under them. No-op when standing_platform is None (ground
+        floor or airborne) or when it's a static Platform (delta_x is
+        always 0 there). Must be called once per frame, after the
+        platform group's own update() has computed this frame's delta
+        and before the player's own input/gravity pass runs.
+        """
+        if self.is_dead or self.standing_platform is None:
+            return
+        self.rect.x += self.standing_platform.delta_x
+        self._clamp_to_walls(moving_right=(self.standing_platform.delta_x > 0))
+        # Re-clamp to world bounds in case riding the platform pushed the
+        # player past a wall - same bounds check player_input() already
+        # applies to walking, kept consistent here.
+        if self.world_width is not None:
+            if self.rect.left < 0:
+                self.rect.left = 0
+            if self.rect.right > self.world_width:
+                self.rect.right = self.world_width
+
+    def set_walls(self, walls):
+        self.walls = walls
+
+    def _clamp_to_walls(self, moving_right):
+        """Stop horizontal movement at any Wall the player is currently
+        overlapping vertically. Only blocks passage in the direction of
+        travel (moving_right) - a wall the player is already partway
+        through (e.g. spawned/placed slightly overlapping) won't trap
+        them, it just stops further movement deeper into it. Called
+        after every x-movement (walk, sprint, dash, and the platform
+        ride-along) so none of those movement paths can tunnel through a
+        wall meant to block a skip.
+        """
+        if not self.walls:
+            return
+        for wall in self.walls:
+            vertically_overlapping = (
+                self.rect.bottom > wall.rect.top and self.rect.top < wall.rect.bottom
+            )
+            if not vertically_overlapping:
+                continue
+            if moving_right and self.rect.right > wall.rect.left and self.rect.left < wall.rect.left:
+                self.rect.right = wall.rect.left
+            elif not moving_right and self.rect.left < wall.rect.right and self.rect.right > wall.rect.right:
+                self.rect.left = wall.rect.right
+
     def player_input(self):
         if self.is_dead:
             return
@@ -123,11 +206,13 @@ class Player(pygame.sprite.Sprite):
                 self.direction = 'right'
                 if sprinting:
                     self.is_walk = False
+                self._clamp_to_walls(moving_right=True)
             if keys[pygame.K_a]:
                 self.rect.x -= speed
                 self.direction = 'left'
                 if sprinting:
                     self.is_walk = False
+                self._clamp_to_walls(moving_right=False)
 
             # Wall collision: keep the player inside the map instead of letting
             # them walk off the left/right edges (this was the actual cause of
@@ -146,6 +231,9 @@ class Player(pygame.sprite.Sprite):
             self.vertical_momentum = self.jump_initial_velocity
             self.is_on_ground = False
             self.is_jump = True
+            # jumping cancels a dash in progress immediately, so gravity
+            # resumes and the jump applies this same frame rather than
+            # waiting out whatever's left of the dash's fixed duration
             self.is_dashing = False
             self.dash_frames_left = 0
         if not keys[pygame.K_SPACE] and self.vertical_momentum < self.min_jump_height_speed and not self.is_on_ground:
@@ -155,13 +243,53 @@ class Player(pygame.sprite.Sprite):
         if self.is_dead:
             return
         if self.is_dashing:
+            # Suspend gravity for the dash's duration: this is what makes
+            # dashing in mid-air a clean horizontal burst instead of a
+            # curve that gravity keeps fighting. Vertical state resumes
+            # exactly where it left off once the dash ends.
             return
+
+        previous_bottom = self.rect.bottom
         self.vertical_momentum += self.gravity_strength
         self.rect.y += self.vertical_momentum
 
-        # Check for ground collision
-        if self.rect.bottom >= self.ground_y:
+        landed = False
+
+        if self.platforms is not None and self.vertical_momentum >= 0:
+            # Only consider landing while falling (or exactly at the apex,
+            # momentum==0) - never while still rising, so jumping up through
+            # a platform from below passes through cleanly instead of
+            # snagging on its underside.
+            candidates = []
+            for plat in self.platforms:
+                horizontally_overlapping = (
+                    self.rect.right > plat.rect.left and self.rect.left < plat.rect.right
+                )
+                if not horizontally_overlapping:
+                    continue
+                # Swept check using last frame's bottom: did we cross this
+                # platform's top surface during THIS frame's movement? Using
+                # previous_bottom (not just the current position) means a
+                # fast fall can't tunnel straight through a thin platform in
+                # one big step.
+                if previous_bottom <= plat.rect.top and self.rect.bottom >= plat.rect.top:
+                    candidates.append(plat)
+            if candidates:
+                # land on the highest (smallest top) qualifying platform -
+                # the first surface you'd actually hit falling from above
+                landing_plat = min(candidates, key=lambda p: p.rect.top)
+                self.rect.bottom = landing_plat.rect.top
+                landed = True
+                self.standing_platform = landing_plat
+
+        if not landed and self.rect.bottom >= self.ground_y:
             self.rect.bottom = self.ground_y
+            landed = True
+            # ground floor isn't a Platform instance, so standing on it
+            # means "not riding anything"
+            self.standing_platform = None
+
+        if landed:
             # Reset unconditionally while grounded, not just on the
             # airborne->grounded transition - previously this only fired
             # once on landing, so vertical_momentum quietly kept
@@ -173,6 +301,13 @@ class Player(pygame.sprite.Sprite):
             self.is_on_ground = True
             self.is_jump = False
             self.vertical_momentum = 0
+        else:
+            # Nothing supports the player this frame - matters now that
+            # platforms have edges: walking off one with no jump involved
+            # needs to correctly start a fall, not leave is_on_ground stuck
+            # True from whenever they last landed.
+            self.is_on_ground = False
+            self.standing_platform = None
 
 
     def player_status(self):
@@ -196,7 +331,10 @@ class Player(pygame.sprite.Sprite):
             animation_list = self.player_sprinting
             animation_speed = 0.2
 
-        if self.is_jump:
+        if self.is_jump or not self.is_on_ground:
+            # not self.is_on_ground covers falling off a platform edge
+            # without having jumped - now possible with real platforms,
+            # and should still read visually as airborne, not mid-walk-cycle
             animation_list = self.player_jumping
             animation_speed = 0.1
 
@@ -280,6 +418,7 @@ class Player(pygame.sprite.Sprite):
             return
 
         self.rect.x += self.dash_speed * self.dash_direction
+        self._clamp_to_walls(moving_right=(self.dash_direction > 0))
 
         # same wall clamp as normal movement - dashing into a wall just
         # stops you at the wall rather than punching through it
