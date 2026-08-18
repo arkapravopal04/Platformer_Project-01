@@ -186,6 +186,9 @@ def _build_leg(ref, direction, hops, start_h):
 
 
 def create_obstacle_course(spawn_x, ground_y, world_width=None):
+    LEFT_MARGIN = 60
+    RIGHT_MARGIN = 60
+
     hops0 = [(80, 180, 0), (45, 170, 55), (50, 170, 55), (50, 180, 55)]
     leg0, ref, h = _build_leg(spawn_x, 1, hops0, 0)
 
