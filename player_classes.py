@@ -1,5 +1,4 @@
 import pygame
-from sys import exit
 
 
 #classes
@@ -109,11 +108,38 @@ class Player(pygame.sprite.Sprite):
         self.is_dead = False
 
 
+        # the (unflipped) animation frame to freeze on once dead - kept
+        # current by animation_state() on every live frame
+        self.death_frame = self.player_blinking[0]
+        # which animation list is currently playing. player_index is shared
+        # by every list, so it has to be rewound whenever this changes -
+        # otherwise a jump started from frame 3 of the walk cycle begins on
+        # frame 3 of the jump cycle (i.e. mid-air pose on the launch frame).
+        self.animation_name = 'idle'
+
+        # coyote time: frames of grace after walking off a ledge during
+        # which a jump still counts. Small enough to be invisible, big
+        # enough that a jump pressed "just as" you leave the edge works.
+        self.coyote_max_frames = 6
+        self.coyote_frames = 0
+        # jump buffering: a jump pressed slightly BEFORE landing is
+        # remembered and fires on touchdown instead of being swallowed.
+        self.jump_buffer_max_frames = 6
+        self.jump_buffer_frames = 0
+        self.space_was_down = False
+
         #important
         self.spawn_pos = (320, 360)
         self.image = self.player_blinking[self.player_index]
-        self.rect = self.image.get_rect(midbottom = self.spawn_pos)
-        #location is also temporary
+        # The collision rect is a FIXED size, deliberately decoupled from the
+        # sprite. Animation frames range from 32x50 to 40x56, and rebuilding
+        # the rect from each frame made the hitbox grow and shrink mid-jump:
+        # wall clamping and platform landing silently changed behaviour
+        # depending on which frame happened to be showing. The sprite is now
+        # drawn around this rect (see draw()) rather than defining it.
+        self.hitbox_size = (32, 56)
+        self.rect = pygame.Rect((0, 0), self.hitbox_size)
+        self.rect.midbottom = self.spawn_pos
 
 
 
@@ -137,7 +163,7 @@ class Player(pygame.sprite.Sprite):
         """
         self.ground_y = ground_y
         self.spawn_pos = (self.spawn_pos[0], ground_y)
-        self.rect = self.image.get_rect(midbottom=self.spawn_pos)
+        self.rect.midbottom = self.spawn_pos
 
     def apply_platform_ride(self):
         """Shift the player horizontally by however much their current
@@ -153,6 +179,12 @@ class Player(pygame.sprite.Sprite):
         if self.is_dead or self.standing_platform is None:
             return
         self.rect.x += self.standing_platform.delta_x
+        # Vertical movers need carrying too: delta_y was being computed and
+        # then thrown away, so a descending platform simply dropped out from
+        # under the player (who then fell after it) and a rising one clipped
+        # up through them. apply_gravity() re-lands them on the platform top
+        # straight afterwards either way, so this only has to keep contact.
+        self.rect.y += self.standing_platform.delta_y
         self._clamp_to_walls(moving_right=(self.standing_platform.delta_x > 0))
         # Re-clamp to world bounds in case riding the platform pushed the
         # player past a wall - same bounds check player_input() already
@@ -226,17 +258,33 @@ class Player(pygame.sprite.Sprite):
                     self.rect.right = self.world_width
 
 
-            #jumping
-        if keys[pygame.K_SPACE] and self.is_on_ground:
+        #jumping
+        space_down = keys[pygame.K_SPACE]
+        # rising edge only - holding the key down must not re-arm the buffer
+        # every frame, or releasing it late would queue a phantom second jump
+        pressed_this_frame = space_down and not self.space_was_down
+        self.space_was_down = space_down
+
+        if pressed_this_frame:
+            self.jump_buffer_frames = self.jump_buffer_max_frames
+
+        if self.jump_buffer_frames > 0 and self.coyote_frames > 0:
             self.vertical_momentum = self.jump_initial_velocity
             self.is_on_ground = False
             self.is_jump = True
+            self.standing_platform = None
+            # spend both, so neither can contribute to a second jump
+            self.jump_buffer_frames = 0
+            self.coyote_frames = 0
             # jumping cancels a dash in progress immediately, so gravity
             # resumes and the jump applies this same frame rather than
             # waiting out whatever's left of the dash's fixed duration
             self.is_dashing = False
             self.dash_frames_left = 0
-        if not keys[pygame.K_SPACE] and self.vertical_momentum < self.min_jump_height_speed and not self.is_on_ground:
+        elif self.jump_buffer_frames > 0:
+            self.jump_buffer_frames -= 1
+
+        if not space_down and self.vertical_momentum < self.min_jump_height_speed and not self.is_on_ground:
             self.vertical_momentum = self.min_jump_height_speed
 
     def apply_gravity(self):
@@ -301,6 +349,7 @@ class Player(pygame.sprite.Sprite):
             self.is_on_ground = True
             self.is_jump = False
             self.vertical_momentum = 0
+            self.coyote_frames = self.coyote_max_frames
         else:
             # Nothing supports the player this frame - matters now that
             # platforms have edges: walking off one with no jump involved
@@ -308,6 +357,9 @@ class Player(pygame.sprite.Sprite):
             # True from whenever they last landed.
             self.is_on_ground = False
             self.standing_platform = None
+            # burn down the grace window; player_input() checks it next frame
+            if self.coyote_frames > 0:
+                self.coyote_frames -= 1
 
 
     def player_status(self):
@@ -318,57 +370,92 @@ class Player(pygame.sprite.Sprite):
             self.status = 'idle'
 
 
+    # Maps vertical momentum to a frame of the 7-frame jump arc, which runs
+    # anticipation -> launch -> rise -> apex -> fall. Each entry is
+    # (momentum is below this value -> use this frame index). Negative
+    # momentum is upward.
+    JUMP_ARC = ((-8.0, 0), (-5.0, 1), (-2.0, 2), (-0.5, 3), (2.0, 4), (6.0, 5))
+
+    def _airborne_frame(self):
+        """Pick the jump frame from how fast the player is actually moving
+        vertically, rather than from a timer.
+
+        A timer cannot work here: at 0.1 frames/tick the 7-frame arc needs
+        70 ticks to play once, but a full jump only lasts ~38 ticks, so the
+        apex and landing frames were literally unreachable - and a longer
+        fall looped straight back to the crouch/launch pose mid-air. Driving
+        it from momentum means the pose always matches what the body is
+        doing, for any jump height, and falling off a ledge (momentum
+        starting at 0) correctly begins near the apex frame instead of
+        replaying a launch the player never performed.
+        """
+        for threshold, index in self.JUMP_ARC:
+            if self.vertical_momentum < threshold:
+                return self.player_jumping[index]
+        return self.player_jumping[6]
+
     def animation_state(self):
-        if self.is_walk:
-            if self.status == 'walking':
-                animation_list = self.player_walking
-                animation_speed = 0.11
-            else:
-                animation_list = self.player_blinking
-                animation_speed = 0.05
-
-        else:
-            animation_list = self.player_sprinting
-            animation_speed = 0.2
-
-        if self.is_jump or not self.is_on_ground:
+        if self.is_dead:
+            # Freeze on the frame we died on. This deliberately reuses the
+            # stored *source* (unflipped) frame rather than self.image:
+            # self.image has already been flipped for a left-facing player,
+            # so re-flipping it every frame made a dead player's sprite
+            # oscillate left/right forever.
+            frame = self.death_frame
+        elif self.is_jump or not self.is_on_ground:
             # not self.is_on_ground covers falling off a platform edge
             # without having jumped - now possible with real platforms,
             # and should still read visually as airborne, not mid-walk-cycle
-            animation_list = self.player_jumping
-            animation_speed = 0.1
+            self.animation_name = 'jump'
+            frame = self._airborne_frame()
+            self.death_frame = frame
+        else:
+            if not self.is_walk:
+                name, animation_list, animation_speed = 'sprint', self.player_sprinting, 0.2
+            elif self.status == 'walking':
+                name, animation_list, animation_speed = 'walk', self.player_walking, 0.11
+            else:
+                name, animation_list, animation_speed = 'idle', self.player_blinking, 0.05
 
-        if self.is_dead:
-            # freeze on the current frame instead of looping forever
-            animation_list = [self.image]
-            animation_speed = 0
+            if name != self.animation_name:
+                # Rewind on every state change. player_index is shared across
+                # all the lists, so without this a jump/walk/sprint switch
+                # resumed at whatever index the *previous* animation had
+                # reached - starting the new cycle on an arbitrary frame.
+                self.animation_name = name
+                self.player_index = 0
 
-        self.player_index += animation_speed
+            self.player_index += animation_speed
+            if self.player_index >= len(animation_list):
+                self.player_index = 0
 
-        if self.player_index >= len(animation_list):
-            self.player_index = 0
+            frame = animation_list[int(self.player_index)]
+            self.death_frame = frame
 
-        # Re-anchor on midbottom every frame: different animation frames can
-        # have different surface sizes/padding, so keep the rect's bottom
-        # pinned to where the player actually stands instead of letting it
-        # drift from whatever size the rect happened to be last frame.
-        anchor = self.rect.midbottom
-        self.image = animation_list[int(self.player_index)]
-        self.rect = self.image.get_rect(midbottom=anchor)
-
-
+        # Never hand out a cached frame directly: set_alpha() below mutates
+        # the surface in place and these surfaces are shared by every
+        # animation list, so the invincibility blink would leak onto
+        # unrelated frames. flip() already returns a fresh surface; the
+        # right-facing path has to copy explicitly.
         if self.direction == 'left':
-            self.image = pygame.transform.flip(self.image, True, False)
+            self.image = pygame.transform.flip(frame, True, False)
+        else:
+            self.image = frame.copy()
 
+        # NOTE: self.rect is deliberately NOT rebuilt from self.image here.
+        # It is a fixed-size hitbox (see __init__); the sprite is drawn
+        # around it by draw().
 
         if self.is_invincible:
-            if pygame.time.get_ticks() // 100%2 == 0:
-                alpha = 128
-            else:
-                alpha = 255
-            self.image.set_alpha(alpha)
-        else:
-            self.image.set_alpha(255)
+            if pygame.time.get_ticks() // 100 % 2 == 0:
+                self.image.set_alpha(128)
+
+    def draw(self, screen, camera):
+        """Blit the sprite aligned to the hitbox by midbottom, so frames of
+        differing sizes stay planted on the same spot instead of shifting
+        the player around as the animation plays."""
+        on_screen = camera.apply(self.rect)
+        screen.blit(self.image, self.image.get_rect(midbottom=on_screen.midbottom))
 
     def invincibility_frames(self):
         if self.is_invincible:
@@ -380,7 +467,6 @@ class Player(pygame.sprite.Sprite):
 #is payer gets hit - basicaly the health system
     def get_hit(self,amount):
         if not self.is_invincible:
-            print("collision detected")
             self.is_invincible = True
             self.invincibility_timer = pygame.time.get_ticks()
 
@@ -394,7 +480,7 @@ class Player(pygame.sprite.Sprite):
                 print("Player defeated!")
                 return  # This could trigger a 'game over' state
             else:
-                print(f"Player took 10 damage. Current health: {self.current_health}/{self.default_health}")
+                print(f"Player took {amount} damage. Current health: {self.current_health}/{self.default_health}")
                 return
 
     def start_dash(self):
@@ -444,10 +530,17 @@ class Player(pygame.sprite.Sprite):
         pygame.draw.rect(display_surf, (0, 0, 0), (9, 19, bar_width + 2, 7), 2)
         pygame.draw.rect(display_surf, color, (10, 20, fill_width, 5))
 
-    def draw_health(self,display_surf):
-        pygame.draw.rect(display_surf, (0,0,0), (9, 9, 102, 7),2)
-        pygame.draw.rect(display_surf,(32, 156, 5),(10,10,self.current_health,5))
-        pygame.draw.rect(display_surf, (0,255,0), (10, 10, self.current_health, 2))
+    def draw_health(self, display_surf):
+        # Scale the fill to the bar's pixel width instead of using
+        # current_health directly as a pixel count - that only ever looked
+        # right because default_health happened to be exactly 100.
+        bar_width = 100
+        fraction = self.current_health / self.default_health if self.default_health else 0
+        fill_width = int(bar_width * max(0.0, min(1.0, fraction)))
+
+        pygame.draw.rect(display_surf, (0, 0, 0), (9, 9, bar_width + 2, 7), 2)
+        pygame.draw.rect(display_surf, (32, 156, 5), (10, 10, fill_width, 5))
+        pygame.draw.rect(display_surf, (0, 255, 0), (10, 10, fill_width, 2))
 
     def restart(self):
         """Reset the player back to a fresh, alive state at the spawn point.
@@ -469,17 +562,21 @@ class Player(pygame.sprite.Sprite):
         self.dash_frames_left = 0
         self.last_dash_time = -9999  # dash immediately available after respawn
 
-        self.image = self.player_blinking[0]
-        self.image.set_alpha(255)
-        self.rect = self.image.get_rect(midbottom=self.spawn_pos)
+        # Let go of whatever we were standing on when we died - otherwise
+        # apply_platform_ride() keeps dragging the respawned player sideways
+        # in time with a MovingPlatform they are no longer anywhere near.
+        self.standing_platform = None
 
+        self.death_frame = self.player_blinking[0]
+        self.image = self.death_frame.copy()
+        self.animation_name = 'idle'
+        self.rect = pygame.Rect((0, 0), self.hitbox_size)
+        self.rect.midbottom = self.spawn_pos
 
-    def player_locate(self):
-         #if u want the screen to wrap around
-          if self.rect.left >= 670:
-              self.rect.left = -30
-          if self.rect.left < -30:
-              self.rect.left = 660
+        self.coyote_frames = self.coyote_max_frames
+        self.jump_buffer_frames = 0
+        self.space_was_down = False
+
 
     def debug(self, screen, camera=None):
         rect_to_draw = camera.apply(self.rect) if camera else self.rect
@@ -499,6 +596,4 @@ class Player(pygame.sprite.Sprite):
         # animation runs last so it re-anchors to this frame's *final* rect
         # position (post-gravity/post-movement), not last frame's stale one
         self.animation_state()
-        self.invincibility_frames()#update this
-        #temporary to not lose the player
-        # self.player_locate()
+        self.invincibility_frames()

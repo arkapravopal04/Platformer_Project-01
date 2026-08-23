@@ -39,7 +39,9 @@ def main(max_frames=None, on_frame=None):
 
 
 
-    background_image = pygame.image.load('random_images_not_sorted/big_pic_2.jpg').convert_alpha()
+    # NOTE: extension case must match the file on disk exactly - Windows is
+    # case-insensitive about it, Linux/macOS are not.
+    background_image = pygame.image.load('random_images_not_sorted/big_pic_2.JPG').convert_alpha()
 
     ground_margin = 0
     player.set_ground_level(background_image.get_height() - ground_margin)
@@ -61,12 +63,18 @@ def main(max_frames=None, on_frame=None):
     obstacle_platforms = course['platforms']
     obstacle_hazards = course['hazards']
     obstacle_walls = course['walls']
+    goal = course['goal']
     player.set_platforms(obstacle_platforms)
     player.set_walls(obstacle_walls)
 
 
     paused = False
     pause_start_time = 0
+    # set once the player touches the summit marker; freezes the sim the same
+    # way death does, and clears on restart
+    won = False
+    # hitbox/camera debug overlays - off by default, toggled with F1
+    debug_draw = False
 
     #event loop
     running = True
@@ -91,11 +99,16 @@ def main(max_frames=None, on_frame=None):
                         paused_duration = pygame.time.get_ticks() - pause_start_time
                         if player.is_invincible:
                             player.invincibility_timer += paused_duration
+                        # dash cooldown is the other wall-clock timer, so it
+                        # gets the same shift - otherwise a long pause silently
+                        # refunds the cooldown and hands back a free dash.
+                        player.last_dash_time += paused_duration
 
                 # --- feature: restart after death ---
-                if event.key == pygame.K_r and player.is_dead:
+                if event.key == pygame.K_r and (player.is_dead or won):
                     player.restart()
                     camera.snap_to_player()
+                    won = False
 
                 # debug helper: no enemy is wired into main.py right now,
                 # so this is the only way to test damage/death by hand.
@@ -106,8 +119,12 @@ def main(max_frames=None, on_frame=None):
                 if event.key == pygame.K_c and not player.is_dead and not paused:
                     player.start_dash()
 
-        if not paused:
+                if event.key == pygame.K_F1:
+                    debug_draw = not debug_draw
+
+        if not paused and not won:
             obstacle_platforms.update()
+            goal.update()
             player.apply_platform_ride()
             player_group.update()
             camera.update()
@@ -116,6 +133,9 @@ def main(max_frames=None, on_frame=None):
                 hit_hazard = pygame.sprite.spritecollideany(player, obstacle_hazards)
                 if hit_hazard is not None:
                     player.get_hit(amount=hit_hazard.damage)
+
+                if player.rect.colliderect(goal.rect):
+                    won = True
 
 
         screen.fill('#4c76a5')
@@ -133,21 +153,37 @@ def main(max_frames=None, on_frame=None):
         for hazard in obstacle_hazards:
             screen.blit(hazard.image, camera.apply(hazard.rect))
 
-        screen.blit(player.image, camera.apply(player.rect))
+        screen.blit(goal.image, camera.apply(goal.rect))
 
-        # debug boxes
-        camera.draw_debug_box(screen)
-        player.debug(screen, camera)
+        # draw() aligns the sprite to the hitbox rather than blitting at it -
+        # animation frames differ in size, so the two are no longer the same
+        # rectangle (see Player.draw)
+        player.draw(screen, camera)
+
+        # debug boxes - hidden unless F1 is toggled on
+        if debug_draw:
+            camera.draw_debug_box(screen)
+            player.debug(screen, camera)
 
         #drawing the health bar
         player.draw_health(screen)
         player.draw_dash_indicator(screen)
 
         # small persistent control hint
-        hint = hint_font.render("P: Pause   C: Dash   H: Take damage (debug)", True, (255, 255, 255))
+        hint = hint_font.render(
+            "A/D: Move   Shift: Sprint   Space: Jump   C: Dash   P: Pause   F1: Hitboxes",
+            True, (255, 255, 255))
         screen.blit(hint, (8, size[1] - 22))
 
-        if player.is_dead:
+        if won:
+            overlay = pygame.Surface(size, pygame.SRCALPHA)
+            overlay.fill((0, 0, 0, 150))
+            screen.blit(overlay, (0, 0))
+            text = font.render("YOU REACHED THE SUMMIT", True, (255, 220, 120))
+            screen.blit(text, text.get_rect(center=(size[0] // 2, size[1] // 2 - 12)))
+            sub = hint_font.render("Press R to run it again", True, (255, 255, 255))
+            screen.blit(sub, sub.get_rect(center=(size[0] // 2, size[1] // 2 + 14)))
+        elif player.is_dead:
             overlay = pygame.Surface(size, pygame.SRCALPHA)
             overlay.fill((0, 0, 0, 150))
             screen.blit(overlay, (0, 0))
