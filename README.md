@@ -28,6 +28,7 @@ Run from the repository root — asset paths are relative to the working directo
 | `P` | Pause |
 | `R` | Restart, once dead |
 | `H` | Take 10 damage (debug) |
+| `V` (or `F11` on desktop) | Toggle fullscreen / windowed |
 | `F1` | Toggle hitbox / camera debug boxes |
 | `F2` | Toggle the segment-authoring overlay (seams, current segment, mouse world coords) |
 | `F3` | Warp to the next altitude preset (see `ALTITUDE_WARPS` in `main.py`) |
@@ -37,6 +38,24 @@ Run from the repository root — asset paths are relative to the working directo
 
 `F1`-`F6` and creative mode are desktop-only — the browser build disables them, since
 several of those keys are reserved by the browser itself (`F5` refreshes the page, etc).
+`F11` is desktop-only for the same reason: in a browser it belongs to the browser, which
+takes the whole tab fullscreen before the game ever sees the key. `V` works everywhere.
+
+### Fullscreen and windowed
+
+The game is drawn to a fixed 640x360 surface — the camera framing, HUD and segment
+layouts all assume it — so switching modes never changes what you can see, only how big
+it's drawn. `V` toggles between the two at any time.
+
+* **Desktop** starts windowed, in the same 640x360 window it always has. Fullscreen
+  scales that surface up by a whole-number factor and centres it, so the pixels stay
+  crisp squares and the leftover edge is black rather than a stretched image.
+* **In the browser** it's the other way round: the page starts with the canvas filling
+  the tab (what it has always done), and `V` pins it to 640x360, centred on a black page.
+
+One limit worth knowing while authoring: pygame reports mouse positions in display
+coordinates, so creative mode's editing clicks land offset from the cursor in fullscreen.
+Author in a window.
 
 ## Layout
 
@@ -58,6 +77,7 @@ several of those keys are reserved by the browser itself (`F5` refreshes the pag
 | `tiles.py` | Per-band block sprites: loading, 3-slicing, caching |
 | `tiles_art/` | Block art, one folder per band — see its README |
 | `save_data.py` | Persists the all-time best altitude to `save_data.json` |
+| `screen_mode.py` | Owns the display; the `V` fullscreen/windowed switch, desktop and web |
 | `camera.py` | Trailing follow-camera; clamped at the bottom (ground), unclamped going up |
 | `enemy.py` | `Enemy` stub — not wired into the game yet |
 

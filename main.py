@@ -10,6 +10,7 @@ from background import Backdrop
 from devmode import DevMode
 import tiles
 import save_data
+from screen_mode import ScreenMode
 
 # True when running under pygbag's in-browser Python (Emscripten). Used to
 # gate behaviour that only makes sense - or only breaks things - on the web:
@@ -53,7 +54,10 @@ async def main(max_frames=None, on_frame=None):
     #general setup
     pygame.init()
     size = (640,360)
-    screen = pygame.display.set_mode(size)
+    # ScreenMode owns the display: it opens the same 640x360 window as
+    # before and handles the V/F11 switch to fullscreen (see screen_mode.py)
+    screen_mode = ScreenMode(size)
+    screen = screen_mode.surface
     pygame.display.set_caption("rustbound")
     clock = pygame.time.Clock()
     font = pygame.font.Font(None, 36)
@@ -196,6 +200,16 @@ async def main(max_frames=None, on_frame=None):
                 # --- feature: dash ---
                 if event.key == pygame.K_c and not player.is_dead and not paused:
                     player.start_dash()
+
+                # --- feature: fullscreen / windowed toggle ---
+                # V works everywhere; F11 is the conventional binding but
+                # only on desktop - in a browser it belongs to the browser,
+                # which takes the whole tab fullscreen before the canvas
+                # ever sees the key.
+                if event.key == pygame.K_v or (not WEB and event.key == pygame.K_F11):
+                    # rebind: on desktop a mode switch re-runs set_mode(),
+                    # which hands back a new display surface
+                    screen = screen_mode.toggle()
 
                 if not WEB and event.key == pygame.K_F1:
                     debug_draw = not debug_draw
@@ -430,7 +444,7 @@ async def main(max_frames=None, on_frame=None):
         # the keys together run past the screen's 640px width and get
         # silently clipped at the edge.
         hint = hint_font.render(
-            "A/D: Move  Shift: Sprint  Space: Jump  C: Dash  P: Pause",
+            "A/D: Move  Shift: Sprint  Space: Jump  C: Dash  P: Pause  V: Screen",
             True, (255, 255, 255))
         screen.blit(hint, (8, size[1] - 22))
         if not WEB:
@@ -449,7 +463,9 @@ async def main(max_frames=None, on_frame=None):
             text = font.render("PAUSED", True, (255, 255, 255))
             screen.blit(text, text.get_rect(center=(size[0] // 2, size[1] // 2)))
 
-        pygame.display.flip()
+        # scales + centres the frame when we're in fullscreen; a plain
+        # flip() otherwise (see screen_mode.py)
+        screen_mode.present()
         # hand control back to the browser once a frame - required for the
         # pygbag/Emscripten build to render/process input at all; a no-op
         # await on desktop, so this runs identically either way
