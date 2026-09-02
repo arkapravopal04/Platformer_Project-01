@@ -30,7 +30,9 @@ jobs:
         run: pip install pygbag
 
       - name: Build web version
-        run: python -m pygbag --build .
+        # --template keeps our own index.html shell (fixed 640x360 canvas on a
+        # black page) instead of pygbag's full-viewport default
+        run: python -m pygbag --build --template web/rustbound.tmpl .
 
       - uses: actions/upload-pages-artifact@v3
         with:
