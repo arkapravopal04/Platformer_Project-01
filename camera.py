@@ -22,12 +22,22 @@ class Camera(pygame.sprite.Sprite):
         # debug box drawing - should move
         pygame.draw.rect(screen, 'Blue', self.camera_rect, 2)
 
-    def _clamp_axis(self, value, map_length, screen_length):
-        """Clamp an offset on one axis, handling maps smaller than the screen."""
+    def _clamp_axis(self, value, map_length, screen_length, clamp_upper=True):
+        """Clamp an offset on one axis, handling maps smaller than the screen.
+
+        clamp_upper=False drops the max_offset=0 ceiling - the vertical
+        axis uses this so the camera can keep scrolling up past the top of
+        the original background art as the player climbs an endless tower.
+        The floor clamp (min_offset, tied to map_length i.e. ground_y)
+        still applies either way, so the camera never shows empty space
+        below the world's bottom edge.
+        """
         min_offset = -(map_length - screen_length)
         max_offset = 0
         if min_offset > max_offset:
             return (screen_length - map_length) / 2
+        if not clamp_upper:
+            return max(min_offset, value)
         return max(min_offset, min(max_offset, value))
 
     def _target_offset(self):
@@ -45,7 +55,7 @@ class Camera(pygame.sprite.Sprite):
         self.offset.x = target_x
         self.offset.y = target_y
         self.offset.x = self._clamp_axis(self.offset.x, self.map_rect.width, self.screen_width)
-        self.offset.y = self._clamp_axis(self.offset.y, self.map_rect.height, self.screen_height)
+        self.offset.y = self._clamp_axis(self.offset.y, self.map_rect.height, self.screen_height, clamp_upper=False)
         self.camera_rect.topleft = self.offset
 
     def update(self):
@@ -60,7 +70,7 @@ class Camera(pygame.sprite.Sprite):
             self.offset.y = target_y
 
         self.offset.x = self._clamp_axis(self.offset.x, self.map_rect.width, self.screen_width)
-        self.offset.y = self._clamp_axis(self.offset.y, self.map_rect.height, self.screen_height)
+        self.offset.y = self._clamp_axis(self.offset.y, self.map_rect.height, self.screen_height, clamp_upper=False)
 
         # Update the camera_rect's position based on the offset
         # This rect represents the top-left corner of the *visible* part of the world
