@@ -1,5 +1,7 @@
 # rustbound
 
+**[Play it in your browser](https://arkapravopal04.github.io/Platformer_Project-01/)** — no install needed.
+
 A 2D platformer built with pygame — my first big project, recovered and cleaned up.
 Climb an endless tower of jump-through platforms, moving platforms, blocking walls and
 spike hazards, using walking, sprinting, variable-height jumps and a dash. There's no
@@ -31,6 +33,10 @@ Run from the repository root — asset paths are relative to the working directo
 | `F3` | Warp to the next altitude preset (see `ALTITUDE_WARPS` in `main.py`) |
 | `F4` | Toggle **creative mode** — fly, jump-arc overlay, mouse level editor (see below) |
 | `F5` | Hot-reload `segments/*.py` and regenerate the tower from the ground up |
+| `F6` | Toggle the frame-time perf overlay (rolling p50/p99/max ms) |
+
+`F1`-`F6` and creative mode are desktop-only — the browser build disables them, since
+several of those keys are reserved by the browser itself (`F5` refreshes the page, etc).
 
 ## Layout
 
