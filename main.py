@@ -135,6 +135,19 @@ async def main(max_frames=None, on_frame=None):
     # animation off real time rather than frame count, so it plays at the
     # same speed if the frame rate ever changes
     frame_ms = 16
+    # How long one simulation step represents. The whole game is authored
+    # against this: gravity, jump velocity, sprint speed and the dash are
+    # all per-step constants, so a step is the unit the level geometry was
+    # tuned in.
+    STEP_MS = 1000.0 / 60.0
+    # Unspent real time carried between frames on the web build (see the
+    # stepping block further down). Desktop leaves it at zero.
+    sim_accumulator = 0.0
+    # Ceiling on how much a single slow frame may catch up. Without it, one
+    # long stall (the ~1s first frame while pygbag unpacks assets, or a
+    # backgrounded tab) would try to replay every missed step at once and
+    # teleport the player through the level.
+    MAX_CATCHUP_STEPS = 5
     while running:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -285,18 +298,55 @@ async def main(max_frames=None, on_frame=None):
         player_altitude = max(0, player.ground_y - player.rect.bottom)
 
         streamed = False
-        if not paused:
+
+        # --- how many simulation steps this frame is worth ---
+        #
+        # Every movement constant in the game is per-step, so game speed is
+        # decided purely by how often this block runs. On desktop that is
+        # settled by clock.tick(60) at the bottom of the loop: one frame,
+        # one step, exactly 60 a second.
+        #
+        # The browser gives no such guarantee. pygbag resumes this coroutine
+        # from the page's animation-frame callback, so the loop runs at the
+        # display's refresh rate - 120 steps a second on a 120Hz panel, and
+        # none at all while the tab isn't being painted - and clock.tick(60)
+        # can't rein that in, because a busy-wait on the browser's one thread
+        # only pushes the next animation frame further out. Stepping once per
+        # animation frame therefore ran the web build at the monitor's speed
+        # rather than the game's, which is what stopped frame-tuned moves
+        # like the sprint jump over a wall from landing the way they do on
+        # desktop.
+        #
+        # So on web, take the step count from the wall clock instead: bank
+        # the elapsed milliseconds and spend them in whole 60Hz steps. The
+        # simulation then advances at the same rate it does on desktop
+        # whatever the browser's frame rate is, and only the smoothness of
+        # the drawing varies with it.
+        if paused:
+            # don't bank time while the game is stopped, or unpausing would
+            # spend the whole pause at once
+            sim_accumulator = 0.0
+        elif WEB:
+            sim_accumulator = min(sim_accumulator + frame_ms,
+                                  STEP_MS * MAX_CATCHUP_STEPS)
+        else:
+            sim_accumulator = STEP_MS
+
+        while sim_accumulator >= STEP_MS:
+            sim_accumulator -= STEP_MS
             # one call streams in above AND restores below, so falling
             # back down lands on the platforms you fell past rather than
-            # dropping through a void
+            # dropping through a void. `or streamed` so a frame that ran
+            # several steps still reports a hitch to the F6 perf overlay
+            # rather than only reporting its last step.
             streamed = tower.ensure_window(player_altitude - CULL_MARGIN,
-                                           player_altitude + LOOKAHEAD)
+                                           player_altitude + LOOKAHEAD) or streamed
 
             # update every entity, not just platforms - anything with its
             # own animation or motion (a bobbing marker, a future timed
             # hazard) ticks here too. Entity.update() is a no-op by default,
             # so static slabs cost nothing.
-            backdrop.update(frame_ms)
+            backdrop.update(STEP_MS)
             for entity in tower.draw_list:
                 entity.update()
             for entity in dev.preview_entities:
@@ -347,6 +397,10 @@ async def main(max_frames=None, on_frame=None):
             if player.is_dead and best_unsaved:
                 save_data.save_best(best_score)
                 best_unsaved = False
+
+            # the player moved, so the value read at the top of the frame is
+            # stale - refresh it for the next step and for the drawing below
+            player_altitude = max(0, player.ground_y - player.rect.bottom)
 
 
         backdrop.draw(screen, camera)
@@ -413,8 +467,9 @@ async def main(max_frames=None, on_frame=None):
 
         # per-frame timing readout - hidden unless F6 is toggled on. Meant
         # for spotting streaming hitches (see tower.ensure_window's return
-        # value) rather than measuring steady-state fps, which the engine
-        # already caps at 60 via clock.tick.
+        # value) rather than measuring steady-state fps. Note this is the
+        # *drawing* rate: on web it follows the browser's animation frames,
+        # while the simulation stays at 60 steps a second either way.
         if perf_overlay and perf_samples:
             samples = sorted(perf_samples)
             n = len(samples)
@@ -470,7 +525,13 @@ async def main(max_frames=None, on_frame=None):
         # pygbag/Emscripten build to render/process input at all; a no-op
         # await on desktop, so this runs identically either way
         await asyncio.sleep(0)
-        frame_ms = clock.tick(60)
+        # Desktop: cap at 60fps, which is also what paces the simulation.
+        # Web: measure only. The browser already decides when we run again,
+        # and clock.tick's wait is a busy-wait on the single thread the page
+        # renders on - asking for 60 there burns the rest of the frame
+        # budget and delays the next animation frame instead of hitting the
+        # target. The stepping block above is what holds game speed steady.
+        frame_ms = clock.tick() if WEB else clock.tick(60)
         perf_samples.append(frame_ms)
         perf_stream_events.append(streamed)
 
