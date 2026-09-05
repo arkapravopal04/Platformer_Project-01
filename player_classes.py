@@ -141,6 +141,10 @@ class Player(pygame.sprite.Sprite):
         self.rect = pygame.Rect((0, 0), self.hitbox_size)
         self.rect.midbottom = self.spawn_pos
 
+        # Walls the current jump has already got above - see
+        # _clamp_to_walls. Emptied on landing by _clear_vaults().
+        self.vaulted_walls = set()
+
 
 
     def set_world_bounds(self, world_width):
@@ -198,6 +202,11 @@ class Player(pygame.sprite.Sprite):
     def set_walls(self, walls):
         self.walls = walls
 
+    def _clear_vaults(self):
+        """Forget which walls the current jump has cleared. Called on
+        landing, so each airborne trip earns its vaults fresh."""
+        self.vaulted_walls.clear()
+
     def _clamp_to_walls(self, moving_right):
         """Stop horizontal movement at any Wall the player is currently
         overlapping vertically. Only blocks passage in the direction of
@@ -211,6 +220,31 @@ class Player(pygame.sprite.Sprite):
         if not self.walls:
             return
         for wall in self.walls:
+            # Once this jump has got the player's feet above a wall's top,
+            # that wall stops blocking them until they next land.
+            #
+            # Without this a jump that genuinely cleared the wall still got
+            # yanked back: the player would rise over the top, move far
+            # enough right to be straddling the wall, and then - the instant
+            # gravity turned their momentum positive and dropped their feet
+            # one pixel below the top - the block below would fire and snap
+            # rect.right back to the wall's near face, several pixels
+            # BACKWARDS from where they already were. Landing on the wrong
+            # side of a wall you had just cleared read as the player being
+            # bounced off it in mid-air.
+            #
+            # It is not a margin the player has to hit twice, either. rect.y
+            # takes a float momentum into an int rect every frame, so the
+            # jump's nominal 95px apex actually delivers 90 - exactly the
+            # height of every wall in the segments, leaving a 3-frame window
+            # at the peak. Crossing takes 8 frames at sprint speed, so
+            # "clear the top, then finish the crossing on the way down" is
+            # the only way over a 90px wall that the arc physically allows.
+            if self.rect.bottom <= wall.rect.top:
+                self.vaulted_walls.add(wall)
+                continue
+            if wall in self.vaulted_walls:
+                continue
             vertically_overlapping = (
                 self.rect.bottom > wall.rect.top and self.rect.top < wall.rect.bottom
             )
@@ -350,6 +384,9 @@ class Player(pygame.sprite.Sprite):
             self.is_jump = False
             self.vertical_momentum = 0
             self.coyote_frames = self.coyote_max_frames
+            # back on solid ground: the next jump has to clear each wall on
+            # its own merits again
+            self._clear_vaults()
         else:
             # Nothing supports the player this frame - matters now that
             # platforms have edges: walking off one with no jump involved
@@ -561,6 +598,7 @@ class Player(pygame.sprite.Sprite):
         self.is_dashing = False
         self.dash_frames_left = 0
         self.last_dash_time = -9999  # dash immediately available after respawn
+        self._clear_vaults()
 
         # Let go of whatever we were standing on when we died - otherwise
         # apply_platform_ride() keeps dragging the respawned player sideways
