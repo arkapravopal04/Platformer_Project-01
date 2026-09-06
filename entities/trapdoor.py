@@ -7,12 +7,16 @@ from .base import Entity, register
 # A single floor panel, not a stretchable slab like Platform - "1x1" in the
 # sense of being one fixed-size tile rather than an arbitrary-width plank.
 TILE_W = 40
-TILE_H = 20
+TILE_H = 10
 
-STAND_DELAY = 45        # frames standing before it gives way (~0.75s @ 60fps)
-WARN_FRACTION = 0.55    # fraction of stand_delay after which it visibly shakes
-OPEN_DURATION = 90      # frames it stays open before resetting shut (~1.5s)
-SHAKE_PERIOD = 6        # frames between the two warning-flicker images
+# Timing is deliberately twitchy: the door should feel like it snaps rather
+# than sags. You get a brief tell (the flicker) and then it's gone - close
+# to the near-instant Dead Cells trapdoor, with just enough warning frames
+# to be readable and reactable at 60fps.
+STAND_DELAY = 14        # frames standing before it gives way (~0.23s @ 60fps)
+WARN_FRACTION = 0.35    # fraction of stand_delay after which it visibly shakes
+OPEN_DURATION = 40      # frames it stays open before resetting shut (~0.66s)
+SHAKE_PERIOD = 2        # frames between the two warning-flicker images
 
 
 @register("trapdoor")
@@ -21,12 +25,12 @@ class TrapDoor(Entity):
 
     Closed, it behaves exactly like a Platform - landable, solid, and the
     player rides/lands on it the same way. Stand on it CONTINUOUSLY past
-    `stand_delay` frames (it visibly shakes for the last stretch as a
-    warning) and it swings open: it removes itself from every sprite group
-    it was placed in, so the player falls through it exactly the way they'd
-    fall through a gap - no special-casing needed in Player at all. It
-    resets shut on its own after `open_duration` frames, whether or not
-    anyone is still there.
+    `stand_delay` frames - a short fuse, with a brief flicker over the last
+    stretch as the only warning - and it snaps open in a single frame: it
+    removes itself from every sprite group it was placed in, so the player
+    falls through it exactly the way they'd fall through a gap - no
+    special-casing needed in Player at all. It resets shut on its own after
+    `open_duration` frames, whether or not anyone is still there.
 
     Standing time resets to zero the moment you step off - a quick tap
     never triggers it, only staying put does.
@@ -87,29 +91,34 @@ class TrapDoor(Entity):
             cap = _mix(cap, RUST_PALETTE[3], warn * 0.65)
         surf = pygame.Surface((width, height), pygame.SRCALPHA)
         surf.fill(body)
-        pygame.draw.rect(surf, cap, (0, 0, width, max(3, height // 3)))
+        # The panel is only a few pixels tall, so every band has to earn its
+        # row: a single lit cap line on top, a shadow line on the bottom,
+        # and the detail sits in between rather than being stacked.
+        pygame.draw.rect(surf, cap, (0, 0, width, max(1, height // 4)))
+        pygame.draw.line(surf, dark, (1, height - 2), (width - 2, height - 2), 1)
         pygame.draw.rect(surf, outline, (0, 0, width, height), 1)
-        # seam down the middle plus two ring-pulls - reads as a hinged
+        # seam down the middle plus two pull-nubs - reads as a hinged
         # double-door, not a plain platform, even at a glance
         mid = width // 2
         pygame.draw.line(surf, dark, (mid, 1), (mid, height - 2), 1)
+        nub_y = max(2, height - 4)
         for hx in (width * 0.28, width * 0.72):
-            pygame.draw.circle(surf, dark, (int(hx), height - 4), 2)
-            pygame.draw.circle(surf, hi, (int(hx), height - 5), 1)
+            pygame.draw.line(surf, dark, (int(hx) - 1, nub_y), (int(hx) + 1, nub_y), 1)
+            surf.set_at((int(hx), max(1, nub_y - 1)), hi)
         return surf
 
     def _render_open(self, width, height):
-        outline, _dark, body, _cap, _hi = self.PALETTE
+        outline, dark, body, _cap, _hi = self.PALETTE
         surf = pygame.Surface((width, height), pygame.SRCALPHA)
-        flap_w = max(3, width // 2 - 2)
-        # the two flaps, swung down against the frame
-        pygame.draw.polygon(surf, body, [(0, 0), (flap_w, 0), (2, height), (0, height)])
-        pygame.draw.polygon(surf, body, [(width, 0), (width - flap_w, 0),
-                                         (width - 2, height), (width, height)])
-        pit_l, pit_r = flap_w, width - flap_w
-        pygame.draw.rect(surf, (14, 11, 9), (pit_l, 0, max(0, pit_r - pit_l), height))
-        pygame.draw.rect(surf, (6, 5, 4),
-                         (pit_l, 0, max(0, pit_r - pit_l), max(2, height // 3)))
+        # Open reads as a hole, not a shape: the pit fills the whole tile and
+        # only the two hinge stubs at the ends are left of the panel, which
+        # at this thickness is all there's room for anyway.
+        surf.fill((14, 11, 9))
+        pygame.draw.rect(surf, (6, 5, 4), (0, 0, width, max(1, height // 3)))
+        stub = max(2, width // 8)
+        for sx in (0, width - stub):
+            pygame.draw.rect(surf, body, (sx, 0, stub, height))
+            pygame.draw.line(surf, dark, (sx, height - 2), (sx + stub - 1, height - 2), 1)
         pygame.draw.rect(surf, outline, (0, 0, width, height), 1)
         return surf
 
@@ -125,7 +134,9 @@ class TrapDoor(Entity):
     @staticmethod
     def _punched(surf, width, height):
         out = surf.copy()
-        pygame.draw.rect(out, (10, 8, 6, 235), (2, 3, max(0, width - 4), max(0, height - 4)))
+        inset = 1 if height < 12 else 2
+        pygame.draw.rect(out, (10, 8, 6, 235),
+                         (2, inset, max(0, width - 4), max(0, height - inset * 2)))
         return out
 
     # -- state machine, driven by main.py's per-frame occupancy check ------

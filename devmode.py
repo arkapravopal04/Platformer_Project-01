@@ -42,6 +42,7 @@ PALETTE_VARIANTS = [
     ('moving',   'lift-UD',   110, {'axis': 'y', 'travel': 40, 'period': 130}),
     ('wall',     'wall',       16, {'height': 60}),
     ('hazard',   'spikes',     40, {}),
+    ('hazard',   'spikes-down',40, {'flip': True}),
     ('trapdoor', 'trapdoor',   TRAPDOOR_W, {'height': TRAPDOOR_H}),
     ('goal',     'goal',       26, {}),
 ]

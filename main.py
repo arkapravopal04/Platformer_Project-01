@@ -382,9 +382,13 @@ async def main(max_frames=None, on_frame=None):
             camera.update()
 
             if not player.is_dead and not dev.active:
-                hit_hazard = pygame.sprite.spritecollideany(player, tower.groups['damaging'])
-                if hit_hazard is not None:
-                    player.get_hit(amount=hit_hazard.damage)
+                # Spikes damage only through their pointed face, so this
+                # tests each hazard's hurt_rect rather than its sprite rect
+                # (see entities.hazard.Hazard.hurts).
+                for hazard in tower.groups['damaging']:
+                    if hazard.hurts(player.rect):
+                        player.get_hit(amount=hazard.damage)
+                        break
 
             # Ratchet: the best only ever goes up, so falling costs time
             # but never score. Kept in memory and flushed to disk on death
